@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>테슬라 한국 실구매가 계산기 (옵션 정확 반영)</title>
+<meta name="description" content="테슬라 Model 3/Model Y 한국 실구매가 계산기. 옵션 가격을 모델별로 분리 반영하고 보조금은 지역+트림별로 저장해 자동 입력합니다." />
+
+<style>
+  body { font-family: Arial, sans-serif; background:#f5f6fa; padding:20px; }
+  .container { max-width:980px; margin:auto; background:#fff; padding:22px; border-radius:12px; box-shadow:0 0 15px rgba(0,0,0,.08); }
+  h1 { text-align:center; margin:0 0 10px; }
+  .hint { font-size:13px; color:#555; background:#fafbff; border:1px solid #eee; padding:10px 12px; border-radius:10px; }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+  @media (max-width: 860px) { .row { grid-template-columns: 1fr; } }
+  label { display:block; margin-top:14px; font-weight:bold; }
+  select,input,button { width:100%; padding:10px; margin-top:6px; border-radius:8px; border:1px solid #ddd; }
+  button { background:#000; color:#fff; border:none; cursor:pointer; }
+  .btnRow { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:14px; }
+  .result { margin-top:16px; padding:14px; background:#eef2f7; border-radius:10px; line-height:1.65; }
+  .small { font-size:12px; color:#666; margin-top:6px; }
+  .warn { color:#b00020; font-weight:bold; }
+  .ok { color:#0a7a2f; font-weight:bold; }
+  .optBox { border:1px solid #eee; border-radius:10px; padding:10px 12px; background:#fff; }
+  .optRow { display:flex; gap:10px; align-items:flex-start; margin:8px 0; }
+  .optRow input[type="checkbox"]{ width:auto; margin-top:4px; }
+  .optRow .optText { flex:1; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#f1f3f7; font-size:12px; margin-left:6px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; font-size:12px; }
+  a { color:#1d4ed8; }
+</style>
+</head>
+
+<body>
+<div class="container">
+  <h1>🇰🇷 테슬라 실구매가 계산기</h1>
+
+  <div class="hint">
+    ✅ 옵션 가격은 “모델/트림별로 다름” → 현재 버전은 모델별 옵션 가격을 분리 반영함.<br>
+    ✅ 보조금은 지역(시/군/구) + 트림 조합으로 <b>한 번 저장하면</b> 다음부터 자동 입력.<br>
+    <div class="small">
+      옵션 가격 근거: 다나와(모델3/모델Y 옵션표) :contentReference[oaicite:3]{index=3} / FSD 가격 보도 :contentReference[oaicite:4]{index=4}
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <label>모델/트림</label>
+      <select id="trim">
+        <option value="M3_STD">Model 3 Standard RWD</option>
+        <option value="M3_LR">Model 3 Long Range RWD</option>
+        <option value="M3_PERF">Model 3 Performance</option>
+        <option value="MY_RWD">Model Y Premium RWD</option>
+        <option value="MY_LR">Model Y Long Range AWD</option>
+      </select>
+
+      <label>차량 기본가 (원) <span class="pill">초기값</span></label>
+      <input type="number" id="basePrice" />
+      <div class="small">※ 실제 결제가는 프로모션/옵션/재고에 따라 달라질 수 있어.</div>
+
+      <label>재고/인벤토리 할인 (원) <span class="pill">선택</span></label>
+      <input type="number" id="inventoryDiscount" placeholder="예: 2000000 (2,000,000원 할인)" />
+
+      <label>취득세 감면 적용</label>
+      <select id="taxOption">
+        <option value="true">감면 적용</option>
+        <option value="false">감면 미적용</option>
+      </select>
+
+      <label>취득세 감면액 (원)</label>
+      <input type="number" id="taxRelief" value="1400000" />
+
+      <div class="small">
+        참고(옵션 가격표 확인):<br>
+        - Model 3 옵션표(다나와) :contentReference[oaicite:5]{index=5}<br>
+        - Model Y 옵션표(다나와) :contentReference[oaicite:6]{index=6}
+      </div>
+    </div>
+
+    <div>
+      <label>옵션 선택 (트림에 따라 자동 변경) <span class="pill">정확 반영</span></label>
+      <div class="optBox" id="optionsBox"></div>
+      <div class="small" id="optNote"></div>
+
+      <label>거주지 (시/군/구)</label>
+      <input id="region" list="regionList" placeholder="예: 창원시 마산합포구 / 수원시 / 청주시" />
+      <datalist id="regionList"></datalist>
+
+      <label>보조금 합계 (국비+지방비, 원)</label>
+      <input type="number" id="subsidy" placeholder="공식(ev.or.kr)에서 확인한 합계 입력" />
+
+      <div class="btnRow">
+        <button id="saveSubsidyBtn" style="background:#1f2937;">보조금 저장(이 지역/트림)</button>
+        <button id="calcBtn">실구매가 계산</button>
+      </div>
+
+      <button id="copyBtn" style="background:#2b2f38; margin-top:10px;">결과 복사</button>
+      <button id="clearCacheBtn" style="background:#6b7280; margin-top:10px;">저장된 보조금 초기화</button>
+
+      <div class="small mono" id="meta"></div>
+    </div>
+  </div>
+
+  <div class="result" id="result">여기에 결과가 표시됩니다.</div>
+</div>
+
+<script>
+/** =========================
+ * 1) 기본가(초기값): 너가 나중에 공식 가격으로 업데이트 가능
+ * ========================= */
+const PRICE_PRESET = {
+  M3_STD: 41990000,
+  M3_LR: 52990000,
+  M3_PERF: 59990000,
+  MY_RWD: 49990000,
+  MY_LR: 59990000
+};
+
+/** =========================
+ * 2) 옵션: 모델/트림별 분리 (근거 포함)
+ * - Model 3: 19" 스포츠휠 1,929,000 / 블랙&화이트 인테리어 1,286,000 :contentReference[oaicite:7]{index=7}
+ * - Model Y: 20" 인덕션휠 2,571,000 / 블랙&화이트 인테리어 1,286,000 / 향상된 오토파일럿 4,522,000 :contentReference[oaicite:8]{index=8}
+ * - FSD: 9,043,000 :contentReference[oaicite:9]{index=9}
+ * ========================= */
+const OPTIONS_BY_TRIM = {
+  // Model 3 계열(트림 간 옵션 구성은 동일로 두되, 나중에 “트림 포함옵션” 로직 추가 가능)
+  M3_STD: [
+    { id:"m3_wheels_19", label:"19인치 스포츠 휠", amount:1929000, source:"danawa" },
+    { id:"m3_interior_bw", label:"블랙&화이트 인테리어", amount:1286000, source:"danawa" },
+    { id:"fsd", label:"FSD(Full Self-Driving)", amount:9043000, source:"news" }
+  ],
+  M3_LR: [
+    { id:"m3_wheels_19", label:"19인치 스포츠 휠", amount:1929000, source:"danawa" },
+    { id:"m3_interior_bw", label:"블랙&화이트 인테리어", amount:1286000, source:"danawa" },
+    { id:"fsd", label:"FSD(Full Self-Driving)", amount:9043000, source:"news" }
+  ],
+  M3_PERF: [
+    { id:"m3_wheels_19", label:"19인치 스포츠 휠", amount:1929000, source:"danawa" },
+    { id:"m3_interior_bw", label:"블랙&화이트 인테리어", amount:1286000, source:"danawa" },
+    { id:"fsd", label:"FSD(Full Self-Driving)", amount:9043000, source:"news" }
+  ],
+
+  // Model Y 계열
+  MY_RWD: [
+    { id:"my_wheels_20", label:"20인치 인덕션 휠", amount:2571000, source:"danawa" },
+    { id:"my_interior_bw", label:"블랙&화이트 인테리어", amount:1286000, source:"danawa" },
+    { id:"eap", label:"향상된 오토파일럿", amount:4522000, source:"danawa" },
+    { id:"fsd", label:"FSD(Full Self-Driving)", amount:9043000, source:"news" }
+  ],
+  MY_LR: [
+    { id:"my_wheels_20", label:"20인치 인덕션 휠", amount:2571000, source:"danawa" },
+    { id:"my_interior_bw", label:"블랙&화이트 인테리어", amount:1286000, source:"danawa" },
+    { id:"eap", label:"향상된 오토파일럿", amount:4522000, source:"danawa" },
+    { id:"fsd", label:"FSD(Full Self-Driving)", amount:9043000, source:"news" }
+  ]
+};
+
+// 지역 자동완성(필요하면 늘려도 됨)
+const REGION_SUGGESTIONS = [
+  "창원시 마산합포구","창원시 마산회원구","창원시 성산구","창원시 의창구","창원시 진해구","창원시",
+  "김해시","진주시","양산시","거제시",
+  "수원시","성남시","용인시","화성시","고양시","청주시","천안시","전주시","포항시",
+  "서울특별시","부산광역시","대구광역시","인천광역시","광주광역시","대전광역시","울산광역시","세종특별자치시"
+];
+
+const STORAGE_KEY = "tesla_calc_v6_state";
+const SUBSIDY_KEY = "tesla_calc_v6_subsidy_map";
+
+/** ===== 유틸 ===== */
+function el(id){ return document.getElementById(id); }
+function toInt(v){ return parseInt(v || "0", 10) || 0; }
+function won(n){ return Math.round(n).toLocaleString("ko-KR") + " 원"; }
+
+function subsidyMapLoad(){ try { return JSON.parse(localStorage.getItem(SUBSIDY_KEY) || "{}"); } catch(e){ return {}; } }
+function subsidyMapSave(map){ localStorage.setItem(SUBSIDY_KEY, JSON.stringify(map)); }
+function subsidyKey(region, trim){ return (region || "").trim() + "||" + trim; }
+
+function renderRegionDatalist(){
+  const dl = el("regionList");
+  dl.innerHTML = "";
+  for (const name of REGION_SUGGESTIONS) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    dl.appendChild(opt);
+  }
+}
+
+function renderOptionsForTrim(trim){
+  const list = OPTIONS_BY_TRIM[trim] || [];
+  const box = el("optionsBox");
+  box.innerHTML = "";
+
+  for (const o of list) {
+    const row = document.createElement("div");
+    row.className = "optRow";
+    row.innerHTML = `
+      <input type="checkbox" id="opt_${o.id}">
+      <div class="optText">
+        <div><b>${o.label}</b> <span class="pill">${won(o.amount)}</span></div>
+      </div>`;
+    box.appendChild(row);
+    row.querySelector("input").addEventListener("change", saveState);
+  }
+
+  // 옵션 근거 노트(짧게)
+  if (trim.startsWith("M3")) {
+    el("optNote").innerHTML = `Model 3 옵션 가격 근거: 다나와 옵션표(휠/인테리어) :contentReference[oaicite:10]{index=10}, FSD 가격 보도 :contentReference[oaicite:11]{index=11}`;
+  } else {
+    el("optNote").innerHTML = `Model Y 옵션 가격 근거: 다나와 옵션표(휠/인테리어/EAP/FSD) :contentReference[oaicite:12]{index=12}`;
+  }
+}
+
+function optionsSum(){
+  const trim = el("trim").value;
+  const list = OPTIONS_BY_TRIM[trim] || [];
+  let sum = 0;
+  for (const o of list) {
+    const cb = document.getElementById("opt_" + o.id);
+    if (cb && cb.checked) sum += o.amount;
+  }
+  return sum;
+}
+
+/** ===== 상태 저장/복원 ===== */
+function saveState(){
+  const trim = el("trim").value;
+  const list = OPTIONS_BY_TRIM[trim] || [];
+  const checked = list.filter(o => document.getElementById("opt_"+o.id)?.checked).map(o => o.id);
+
+  const state = {
+    trim,
+    basePrice: el("basePrice").value,
+    inventoryDiscount: el("inventoryDiscount").value,
+    taxOption: el("taxOption").value,
+    taxRelief: el("taxRelief").value,
+    region: el("region").value,
+    subsidy: el("subsidy").value,
+    checked
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function loadState(){
+  try {
+    const s = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    if (!s) return;
+    if (s.trim) el("trim").value = s.trim;
+    // 먼저 옵션 UI 렌더
+    renderOptionsForTrim(el("trim").value);
+
+    if (s.basePrice) el("basePrice").value = s.basePrice;
+    if (s.inventoryDiscount) el("inventoryDiscount").value = s.inventoryDiscount;
+    if (s.taxOption) el("taxOption").value = s.taxOption;
+    if (s.taxRelief) el("taxRelief").value = s.taxRelief;
+    if (s.region) el("region").value = s.region;
+    if (s.subsidy) el("subsidy").value = s.subsidy;
+
+    // 체크 복원(현재 trim 기준)
+    if (Array.isArray(s.checked)) {
+      for (const id of s.checked) {
+        const cb = document.getElementById("opt_"+id);
+        if (cb) cb.checked = true;
+      }
+    }
+  } catch(e){}
+}
+
+function applyPreset(){
+  const trim = el("trim").value;
+  const base = el("basePrice");
+  const cur = toInt(base.value);
+  const presetValues = Object.values(PRICE_PRESET);
+  if (!cur || presetValues.includes(cur)) base.value = PRICE_PRESET[trim] || "";
+
+  renderOptionsForTrim(trim);
+  autoFillSubsidyFromCache();
+  saveState();
+}
+
+/** ===== 보조금 캐시 ===== */
+function autoFillSubsidyFromCache(){
+  const region = (el("region").value || "").trim();
+  const trim = el("trim").value;
+  if (!region) return;
+  const map = subsidyMapLoad();
+  const k = subsidyKey(region, trim);
+  if (map[k] != null) {
+    el("subsidy").value = map[k];
+    el("meta").textContent = `✅ 저장된 보조금 자동입력: ${region} / ${trim}`;
+  } else {
+    el("meta").textContent = `ℹ️ 저장된 보조금 없음: ${region} / ${trim} (한 번 저장하면 자동 입력)`;
+  }
+}
+
+function saveSubsidy(){
+  const region = (el("region").value || "").trim();
+  const trim = el("trim").value;
+  const subsidy = toInt(el("subsidy").value);
+
+  if (!region) { el("result").innerHTML = `<span class="warn">지역을 먼저 입력/선택해줘.</span>`; return; }
+  if (!subsidy) { el("result").innerHTML = `<span class="warn">보조금(원)을 입력해줘. (국비+지방비 합계)</span>`; return; }
+
+  const map = subsidyMapLoad();
+  map[subsidyKey(region, trim)] = subsidy;
+  subsidyMapSave(map);
+
+  el("meta").textContent = `✅ 보조금 저장 완료: ${region} / ${trim} = ${won(subsidy)}`;
+  el("result").innerHTML = `✅ 저장됨: <b>${region}</b> / <b>${trim}</b> 보조금 = <b>${won(subsidy)}</b><br>이제부터 같은 지역/트림은 자동으로 채워짐.`;
+}
+
+function calc(){
+  saveState();
+
+  const trim = el("trim").value;
+  const basePrice = toInt(el("basePrice").value);
+  const discount = toInt(el("inventoryDiscount").value);
+  const region = (el("region").value || "").trim();
+
+  autoFillSubsidyFromCache();
+  const subsidy = toInt(el("subsidy").value);
+
+  const taxOption = el("taxOption").value === "true";
+  const taxRelief = toInt(el("taxRelief").value);
+
+  const optSum = optionsSum();
+
+  if (!basePrice) { el("result").innerHTML = `<span class="warn">차량 기본가가 비어있어.</span>`; return; }
+  if (!region) { el("result").innerHTML = `<span class="warn">지역을 입력/선택해줘.</span>`; return; }
+  if (!subsidy) {
+    el("result").innerHTML =
+      `<span class="warn">이 지역/트림 보조금이 아직 저장/입력되지 않았어.</span><br>
+       공식(ev.or.kr)에서 <b>국비+지방비 합계</b> 확인 → 입력 → <b>[보조금 저장]</b> 눌러줘.`;
+    return;
+  }
+
+  const vehiclePrice = Math.max(0, basePrice + optSum - discount);
+
+  let tax = vehiclePrice * 0.07; // 단순 추정 모델
+  if (taxOption) tax = Math.max(0, tax - taxRelief);
+
+  const finalPrice = vehiclePrice - subsidy + tax;
+
+  const lines = [
+    `✅ 트림: <b>${trim}</b>`,
+    `거주지: <b>${region}</b>`,
+    `기본가: ${won(basePrice)}`,
+    `옵션 합계(트림별): ${won(optSum)}`,
+    `재고 할인: -${won(discount)}`,
+    `<hr>`,
+    `차량가(옵션-할인 반영): <b>${won(vehiclePrice)}</b>`,
+    `보조금(총액): <b>-${won(subsidy)}</b>`,
+    `취득세(추정): <b>${won(tax)}</b>`,
+    `<hr>`,
+    `🎯 최종 실구매가(추정): <span class="ok">${won(finalPrice)}</span>`
+  ];
+  el("result").innerHTML = lines.join("<br>");
+  el("meta").textContent = `계산 시각: ${new Date().toLocaleString("ko-KR")}`;
+}
+
+async function copyResult(){
+  const text = el("result").innerText.trim();
+  try { await navigator.clipboard.writeText(text); alert("복사 완료!"); }
+  catch(e){ alert("복사 실패. 결과를 드래그해서 복사해줘!"); }
+}
+
+function clearCache(){
+  localStorage.removeItem(SUBSIDY_KEY);
+  el("meta").textContent = "저장된 보조금 캐시를 초기화했어.";
+  el("result").innerHTML = "저장된 보조금이 초기화되었습니다.";
+}
+
+/** init */
+renderRegionDatalist();
+renderOptionsForTrim(el("trim").value);
+loadState();
+applyPreset();
+
+el("trim").addEventListener("change", applyPreset);
+el("region").addEventListener("change", () => { autoFillSubsidyFromCache(); saveState(); });
+
+el("saveSubsidyBtn").addEventListener("click", saveSubsidy);
+el("calcBtn").addEventListener("click", calc);
+el("copyBtn").addEventListener("click", copyResult);
+el("clearCacheBtn").addEventListener("click", clearCache);
+</script>
+</body>
+</html>
