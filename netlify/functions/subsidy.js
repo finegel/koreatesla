@@ -1,7 +1,8 @@
 // netlify/functions/subsidy.js
-// v2: ev.or.kr에서 지역/트림 보조금 "가능하면" 자동 추출 + 24h 캐시 + 실패 시 manual 모드
+// v3: teslacharger.co.kr/subsidy 페이지에서 region+trim "총 보조금"을 파싱
+// 실패 시 manual 모드로 fallback
 
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12시간 캐시 (보조금은 변동 가능)
 let cache = { ts: 0, map: {} };
 
 function resp(statusCode, body) {
@@ -16,83 +17,65 @@ function resp(statusCode, body) {
   };
 }
 
-function now() { return Date.now(); }
-function normalize(s) { return (s || "").trim().replace(/\s+/g, " "); }
+function normalize(s) {
+  return (s || "").trim().replace(/\s+/g, " ");
+}
 
-const TRIM_ALIASES = {
-  M3_STD: ["Model 3 Standard RWD", "Model 3 Standard", "모델 3", "스탠다드", "RWD"],
-  M3_LR: ["Model 3 Premium Long Range RWD", "Model 3 Long Range", "롱레인지", "Long Range"],
-  M3_PERF: ["Model 3 Performance", "퍼포먼스", "Performance"],
-  MY_RWD: ["Model Y Premium RWD", "Model Y RWD", "모델 Y", "Premium RWD", "RWD"],
-  MY_LR: ["Model Y Premium Long Range", "Model Y Long Range", "Long Range", "롱레인지", "AWD"],
+function now() { return Date.now(); }
+
+const TRIM_LABEL = {
+  M3_STD: "Model 3 Standard RWD",
+  M3_LR: "Model 3 Premium Long Range RWD",
+  M3_PERF: "Model 3 Performance",
+  MY_RWD: "Model Y Premium RWD",
+  MY_LR: "Model Y Premium Long Range",
 };
 
-function parseWonFromWindow(txt) {
-  // 우선순위: "총 보조금 336만원" -> 3,360,000원
-  let m = txt.match(/총\s*보조금\s*([0-9,]+)\s*만원/);
-  if (m) return parseInt(m[1].replace(/,/g, ""), 10) * 10000;
-
-  // "국비 168만원 지방비 168만원" 식이면 합산 필요할 수 있으나
-  // v2는 총액 패턴 우선, 없으면 만원/원 단일 값이라도 잡아줌.
-  m = txt.match(/([0-9,]+)\s*원/);
-  if (m) {
-    const v = parseInt(m[1].replace(/,/g, ""), 10);
-    if (v > 100000) return v;
-  }
-
-  m = txt.match(/([0-9,]+)\s*만원/);
-  if (m) return parseInt(m[1].replace(/,/g, ""), 10) * 10000;
-
-  return null;
-}
-
-async function fetchHtml() {
-  const url = "https://ev.or.kr/nportal/buySupprt/initPsLocalCarPirceAction.do";
+async function fetchTeslaChargerText() {
+  // 서버 사이드라 CORS 상관 없음
+  const url = "https://teslacharger.co.kr/subsidy";
   const r = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    },
+    headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*" },
   });
-  if (!r.ok) throw new Error(`ev.or.kr HTTP ${r.status}`);
-  return await r.text();
+  if (!r.ok) throw new Error(`teslacharger HTTP ${r.status}`);
+  const html = await r.text();
+  // HTML 그대로 파싱하기보다, 텍스트 기반으로 찾기 쉽게 태그를 줄이는 간단 처리
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<\/?[^>]+>/g, " ")
+    .replace(/\s+/g, " ");
 }
 
-function tryExtract(html, region, trim) {
+function parseSubsidyWon(pageText, region, trim) {
   const reg = normalize(region);
-  const idxReg = html.indexOf(reg);
+  const label = TRIM_LABEL[trim];
+  if (!label) return { ok: false, reason: "UNKNOWN_TRIM" };
+
+  const idxReg = pageText.indexOf(reg);
   if (idxReg < 0) return { ok: false, reason: "REGION_NOT_FOUND" };
 
-  // region 근처 큰 블록을 잡고
-  const start = Math.max(0, idxReg - 80000);
-  const end = Math.min(html.length, idxReg + 80000);
-  const block = html.slice(start, end);
+  // 지역 근처 1만자 정도 블록에서 트림/총보조금 찾기
+  const block = pageText.slice(Math.max(0, idxReg - 20000), idxReg + 20000);
 
-  const aliases = TRIM_ALIASES[trim] || [];
-  // 트림 문자열이 직접 안 나오면, 모델명(예: Model 3)만이라도 매칭해서 금액을 찾는 fallback
-  const fallbackAliases = trim.startsWith("M3") ? ["Model 3", "모델 3"] : ["Model Y", "모델 Y"];
+  const idxModel = block.indexOf(label);
+  if (idxModel < 0) return { ok: false, reason: "TRIM_NOT_FOUND_IN_REGION_BLOCK" };
 
-  // 1) 트림 별칭으로 최대한 정확히 찾기
-  for (const a of aliases) {
-    const idx = block.toLowerCase().indexOf(a.toLowerCase());
-    if (idx >= 0) {
-      const win = block.slice(Math.max(0, idx - 2000), idx + 4000);
-      const won = parseWonFromWindow(win);
-      if (won != null) return { ok: true, won, method: `alias:${a}` };
-    }
-  }
+  const win = block.slice(Math.max(0, idxModel - 2000), idxModel + 4000);
 
-  // 2) 모델명으로라도 잡고 근처 금액
-  for (const a of fallbackAliases) {
-    const idx = block.toLowerCase().indexOf(a.toLowerCase());
-    if (idx >= 0) {
-      const win = block.slice(Math.max(0, idx - 2000), idx + 4000);
-      const won = parseWonFromWindow(win);
-      if (won != null) return { ok: true, won, method: `fallback:${a}` };
-    }
-  }
+  // "총 보조금 336만원" 형태를 우선 매칭
+  let m = win.match(/총\s*보조금\s*([0-9,]+)\s*만원/);
+  if (m) return { ok: true, won: parseInt(m[1].replace(/,/g, ""), 10) * 10000 };
 
-  return { ok: false, reason: "TRIM_OR_MONEY_NOT_FOUND" };
+  // 혹시 "만원"만 노출되는 경우 fallback
+  m = win.match(/([0-9,]+)\s*만원/);
+  if (m) return { ok: true, won: parseInt(m[1].replace(/,/g, ""), 10) * 10000 };
+
+  // 마지막 fallback: 원 표기
+  m = win.match(/([0-9,]+)\s*원/);
+  if (m) return { ok: true, won: parseInt(m[1].replace(/,/g, ""), 10) };
+
+  return { ok: false, reason: "MONEY_NOT_FOUND" };
 }
 
 exports.handler = async (event) => {
@@ -108,53 +91,44 @@ exports.handler = async (event) => {
 
   // 캐시 hit
   if (cache.map[key] != null && (now() - cache.ts) < CACHE_TTL_MS) {
-    return resp(200, {
-      ok: true,
-      source: "cache",
-      updatedAt: cache.ts,
-      region,
-      trim,
-      subsidyWon: cache.map[key],
-    });
+    return resp(200, { ok: true, source: "cache", updatedAt: cache.ts, region, trim, subsidyWon: cache.map[key] });
   }
 
-  // 캐시 만료면 새로 시도
   try {
-    const html = await fetchHtml();
-    const out = tryExtract(html, region, trim);
+    const text = await fetchTeslaChargerText();
+    const parsed = parseSubsidyWon(text, region, trim);
 
-    if (!out.ok) {
+    if (!parsed.ok) {
       return resp(200, {
         ok: false,
         mode: "manual",
+        source: "teslacharger",
         region,
         trim,
-        reason: out.reason,
-        message:
-          "자동 조회가 실패했어. ev.or.kr에서 해당 지역/차종 보조금(국비+지방비 합계)을 확인해 수동 입력 후 저장해줘.",
+        reason: parsed.reason,
+        message: "자동조회 실패. (지역 표기/페이지 구조 변경 가능) 공식(ev.or.kr)에서 확인 후 수동 입력/저장해줘.",
       });
     }
 
     cache.ts = now();
-    cache.map[key] = out.won;
+    cache.map[key] = parsed.won;
 
     return resp(200, {
       ok: true,
-      source: "ev_or_kr",
-      method: out.method,
+      source: "teslacharger",
       updatedAt: cache.ts,
       region,
       trim,
-      subsidyWon: out.won,
+      subsidyWon: parsed.won,
     });
   } catch (e) {
     return resp(200, {
       ok: false,
       mode: "manual",
+      source: "teslacharger",
       region,
       trim,
-      message:
-        "자동 조회 실패(네트워크/차단/구조변경). ev.or.kr에서 수동 확인 후 입력해줘.",
+      message: "자동조회 실패(네트워크/차단/구조변경). ev.or.kr에서 수동 확인 후 입력/저장해줘.",
       error: String(e?.message || e),
     });
   }
